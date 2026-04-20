@@ -2,13 +2,23 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
-import { supabase, type IssPosition, type IssCrewMember } from "@/lib/supabase";
+import { supabase, type IssPosition } from "@/lib/supabase";
 import { reverseGeocode } from "@/lib/geocode";
 
 const Globe = dynamic(() => import("react-globe.gl"), { ssr: false });
 
-const TRAIL_WINDOW_MINUTES = 90;
-const MAX_TRAIL_POINTS = 1200;
+const WINDOWS = [
+  { minutes: 30, color: "#ffbf47", label: "30 MIN" },
+  { minutes: 60, color: "#5dd8f7", label: "60 MIN" },
+  { minutes: 90, color: "#b485ff", label: "90 MIN" },
+  { minutes: 180, color: "#7dff9e", label: "3 H" },
+  { minutes: 360, color: "#ff8a5c", label: "6 H" },
+  { minutes: 720, color: "#ff6ec7", label: "12 H" },
+  { minutes: 1440, color: "#b9ff5c", label: "24 H" },
+] as const;
+
+const SAMPLED_TARGET_POINTS = 1000;
+const MAX_TRAIL_POINTS = 2000;
 const EXPECTED_POLL_MS = 13_000;
 const HOVER_DOT_INTERVAL_S = 30;
 
@@ -64,7 +74,7 @@ type GlobeHandle = {
 
 export default function IssViewer() {
   const [positions, setPositions] = useState<IssPosition[]>([]);
-  const [crew, setCrew] = useState<IssCrewMember[]>([]);
+  const [windowMin, setWindowMin] = useState<number>(90);
   const [size, setSize] = useState({ w: 800, h: 600 });
   const [displayPos, setDisplayPos] = useState<{
     lat: number;
@@ -97,23 +107,31 @@ export default function IssViewer() {
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
+  const windowMinRef = useRef(windowMin);
   useEffect(() => {
+    windowMinRef.current = windowMin;
+  }, [windowMin]);
+
+  useEffect(() => {
+    let cancelled = false;
     (async () => {
-      const since = new Date(
-        Date.now() - TRAIL_WINDOW_MINUTES * 60_000,
-      ).toISOString();
-      const { data, error } = await supabase
-        .from("iss_positions")
-        .select("*")
-        .gte("ts", since)
-        .order("ts", { ascending: true });
+      const { data, error } = await supabase.rpc("iss_positions_window", {
+        minutes_back: windowMin,
+        target_points: SAMPLED_TARGET_POINTS,
+      });
+      if (cancelled) return;
       if (error) {
-        console.error("initial positions load failed", error);
+        console.error("window load failed", error);
         return;
       }
       setPositions((data ?? []) as IssPosition[]);
     })();
+    return () => {
+      cancelled = true;
+    };
+  }, [windowMin]);
 
+  useEffect(() => {
     const channel = supabase
       .channel("iss_positions_stream")
       .on(
@@ -122,7 +140,9 @@ export default function IssViewer() {
         (payload) => {
           const row = payload.new as IssPosition;
           setPositions((prev) => {
-            const cutoff = Date.now() - TRAIL_WINDOW_MINUTES * 60_000;
+            if (prev.some((p) => p.id === row.id)) return prev;
+            const cutoff =
+              Date.now() - windowMinRef.current * 60_000;
             const next = [...prev, row].filter(
               (p) => new Date(p.ts).getTime() >= cutoff,
             );
@@ -139,42 +159,15 @@ export default function IssViewer() {
     };
   }, []);
 
-  useEffect(() => {
-    (async () => {
-      const { data, error } = await supabase
-        .from("iss_crew")
-        .select("name, craft")
-        .eq("craft", "ISS")
-        .order("name", { ascending: true });
-      if (error) {
-        console.error("crew load failed", error);
-        return;
-      }
-      setCrew((data ?? []) as IssCrewMember[]);
-    })();
-
-    const channel = supabase
-      .channel("iss_crew_stream")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "iss_crew" },
-        async () => {
-          const { data } = await supabase
-            .from("iss_crew")
-            .select("name, craft")
-            .eq("craft", "ISS")
-            .order("name", { ascending: true });
-          if (data) setCrew(data as IssCrewMember[]);
-        },
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, []);
-
   const latest = positions[positions.length - 1];
+
+  const visiblePositions = useMemo(() => {
+    const cutoff = Date.now() - windowMin * 60_000;
+    return positions.filter((p) => new Date(p.ts).getTime() >= cutoff);
+  }, [positions, windowMin]);
+
+  const activeColor =
+    WINDOWS.find((w) => w.minutes === windowMin)?.color ?? "#ffbf47";
 
   useEffect(() => {
     if (!latest) return;
@@ -300,10 +293,22 @@ export default function IssViewer() {
   }, []);
 
   const trailPath = useMemo(() => {
-    if (positions.length < 2) return [];
-    const coords = positions.map((p) => [p.lat, p.lon, 0.02]);
-    return [{ coords }];
-  }, [positions]);
+    if (visiblePositions.length < 2) return [];
+    const segments: { coords: number[][] }[] = [];
+    let current: number[][] = [];
+    let lastMs = -Infinity;
+    for (const p of visiblePositions) {
+      const t = new Date(p.ts).getTime();
+      if (current.length > 0 && t - lastMs > 60_000) {
+        if (current.length >= 2) segments.push({ coords: current });
+        current = [];
+      }
+      current.push([p.lat, p.lon, 0.02]);
+      lastMs = t;
+    }
+    if (current.length >= 2) segments.push({ coords: current });
+    return segments;
+  }, [visiblePositions]);
 
   const globePoints = useMemo(() => {
     const trailPoints: {
@@ -314,7 +319,7 @@ export default function IssViewer() {
       ts: string;
     }[] = [];
     let lastMs = -Infinity;
-    for (const p of positions) {
+    for (const p of visiblePositions) {
       const t = new Date(p.ts).getTime();
       if (t - lastMs >= HOVER_DOT_INTERVAL_S * 1000) {
         trailPoints.push({
@@ -340,7 +345,12 @@ export default function IssViewer() {
       ];
     }
     return trailPoints;
-  }, [positions, displayPos, latest?.ts]);
+  }, [visiblePositions, displayPos, latest?.ts]);
+
+  const pathColors = useMemo(
+    () => [`${activeColor}40`, `${activeColor}d9`],
+    [activeColor],
+  );
 
   const ringsData = useMemo(() => {
     if (!displayPos) return [];
@@ -375,13 +385,13 @@ export default function IssViewer() {
         pointsData={globePoints}
         pointAltitude={(d) => (d as { alt: number }).alt}
         pointRadius={(d) =>
-          (d as { kind: "iss" | "trail" }).kind === "iss" ? 1.8 : 0.5
+          (d as { kind: "iss" | "trail" }).kind === "iss" ? 1.8 : 1.0
         }
         pointColor={(d) => {
           const p = d as { kind: "iss" | "trail" };
           if (p.kind === "iss")
             return latest?.visibility === "eclipsed" ? "#ff5a5a" : "#ffbf47";
-          return "rgba(255,191,71,0.25)";
+          return `${activeColor}40`;
         }}
         pointsTransitionDuration={0}
         onPointHover={(d) => {
@@ -421,7 +431,7 @@ export default function IssViewer() {
         pathPointLat={(p) => (p as number[])[0]}
         pathPointLng={(p) => (p as number[])[1]}
         pathPointAlt={(p) => (p as number[])[2]}
-        pathColor={() => ["rgba(255,191,71,0.25)", "rgba(255,191,71,0.85)"]}
+        pathColor={() => pathColors}
         pathStroke={1.5}
         pathTransitionDuration={0}
       />
@@ -496,19 +506,34 @@ export default function IssViewer() {
         </button>
       )}
 
-      <section className="pointer-events-none absolute right-6 top-6 z-10 w-56 border border-[#ffbf47]/25 bg-black/40 p-4 text-[11px] shadow-[0_0_20px_rgba(255,191,71,0.08)] backdrop-blur-sm">
-        <div className="mb-3 flex items-center justify-between">
-          <span className="text-[10px] tracking-[0.25em] text-white/40">
-            ── CREW ──
-          </span>
-          <span className="tabular-nums text-[#ffbf47]">{crew.length}</span>
+      <section className="pointer-events-auto absolute right-6 top-6 z-10 w-44 border border-[#ffbf47]/25 bg-black/40 p-4 text-[11px] shadow-[0_0_20px_rgba(255,191,71,0.08)] backdrop-blur-sm">
+        <div className="mb-3 text-[10px] tracking-[0.25em] text-white/40">
+          ── TRAIL ──
         </div>
-        <ul className="space-y-1 text-right">
-          {crew.map((c) => (
-            <li key={c.name} className="text-[#e4e4e4]/90">
-              {c.name}
-            </li>
-          ))}
+        <ul className="space-y-1.5">
+          {WINDOWS.map((w) => {
+            const active = w.minutes === windowMin;
+            return (
+              <li key={w.minutes}>
+                <button
+                  type="button"
+                  onClick={() => setWindowMin(w.minutes)}
+                  className="flex w-full items-center gap-2 border px-2 py-1.5 text-[10px] tracking-[0.2em] transition hover:bg-white/5"
+                  style={{
+                    borderColor: active ? w.color : "rgba(255,255,255,0.12)",
+                    backgroundColor: active ? `${w.color}1f` : "transparent",
+                    color: active ? w.color : "rgba(228,228,228,0.65)",
+                  }}
+                >
+                  <span
+                    className="inline-block h-1.5 w-4 flex-shrink-0"
+                    style={{ backgroundColor: w.color }}
+                  />
+                  <span>{w.label}</span>
+                </button>
+              </li>
+            );
+          })}
         </ul>
       </section>
     </div>
