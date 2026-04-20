@@ -437,7 +437,7 @@ export default function IssViewer() {
       />
 
       <div className="pointer-events-none absolute left-6 top-6 z-10 xl:left-1/2 xl:-translate-x-1/2">
-        <div className="text-2xl font-semibold tracking-[0.3em] text-[#5dd8f7]">
+        <div className="whitespace-nowrap text-2xl font-bold tracking-[0.3em] text-[#5dd8f7]">
           INTERNATIONAL SPACE STATION LIVE TRACKER
         </div>
       </div>
