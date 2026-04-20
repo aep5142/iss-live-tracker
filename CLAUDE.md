@@ -25,32 +25,37 @@ Polls the International Space Station's position and renders it on a 3D globe th
 Primary view is **Option 1** (per hand-sketch in `/Users/agustin.ep/Downloads/IMG_2708.HEIC`): 3D Earth globe with the ISS orbiting around it. Option 2 (POV from the ISS with Earth rotating below) was considered but deferred — same data pipeline, ~2–3× the frontend work. Revisit as stretch.
 
 **Features shipped — Globe:**
-- Orbit trail — last ~90 min of positions as a glowing amber path
-- Hoverable trail dots — one every ~30s of flight, radius 1.0, 30% alpha so they don't overpower the line; anchored tooltip `ISS WAS HERE · X MIN AGO` (also supports `23s AGO` / `1h 23m AGO`); position is snapshot on hover entry (doesn't chase the cursor); 500ms debounce prevents flicker between dots
+- Orbit trail — configurable window (30 / 60 / 90 min / 3 H / 6 H / 12 H / 24 H) via the right-side selector; each window has its own accent color, applied to both the path gradient and the trail dots
+- Trail is drawn flat on the surface (`alt: 0`) — just the 2D path. Trail "dots" at each hover-anchor point are still in the scene but rendered with fully-transparent color so only the line is visible while hover-picking keeps working
+- ISS marker is the only 3D element on the globe: bigger amber dot at `alt: 0.06`, plus a pulsing amber ring (`ringsData`, max radius 4°, repeat ~1.4s) that makes "now" unmistakable next to the trailing dots
+- Path is split into separate segments whenever consecutive samples are >60s apart, so worker gaps don't draw long great-circle chords across the globe
+- Hoverable trail dots — one every ~30s of flight; anchored tooltip `ISS WAS HERE · X MIN AGO` (also `23s AGO` / `1h 23m AGO`); position snapshots on hover entry (doesn't chase the cursor); 500ms debounce prevents flicker between dots
 - Smooth interpolation — great-circle SLERP in a `requestAnimationFrame` loop so the ISS glides between known fixes instead of teleporting
 - Initial camera centering — pans to the ISS on first load
+- **Recenter button** — crosshair icon top-right, smooth 1s pan back to the current ISS position (for when the user rotates the globe and loses it)
 - Starfield background — `three-globe`'s `night-sky.png` texture
 
 **Features shipped — HUD (mission-control aesthetic, "direction A"):**
 - Geist Mono everywhere, uppercase tracked labels, amber (`#ffbf47`) + cyan (`#5dd8f7`) accents
 - Bordered panels with `backdrop-blur-sm` and a soft amber glow shadow
-- Telemetry rows: `LATITUDE`, `LONGITUDE`, `ALTITUDE` (1 decimal), `VELOCITY` (1 decimal), `SUNLIGHT` (color-coded: amber `SUNLIT` / cyan `VISIBLE` / red `ECLIPSED`), `OVER` (country or ocean)
-- Crew panel (ISS only) on the right — `CREW · N` with names
-- Pulsing `◉ TRACKING · wheretheiss.at` header
+- Layout: title **INTERNATIONAL SPACE STATION LIVE TRACKER** (large, cyan) top-center on `xl+` / top-left on narrower screens; `◉ TRACKING` status top-right; recenter crosshair to its right; telemetry panel vertically centered on the left; trail selector vertically centered on the right (both `w-64 h-[420px] p-5 text-[12px]` so they match); data source link `DATA SOURCE · wheretheiss.at ↗` bottom-left (external link)
+- Telemetry rows: `LATITUDE`, `LONGITUDE`, `ALTITUDE` (1 decimal), `VELOCITY` (1 decimal), `SUNLIGHT` (color-coded: amber `SUNLIT` / cyan `VISIBLE` / red `ECLIPSED`), `OVER` (country or ocean). Rows are distributed with `flex justify-between` so they fill the panel height evenly
+- Trail selector: 7 buttons, each row = colored swatch + label; active button gets that color as border + tinted background + text
+- **Crew panel removed** — the user didn't want it, replaced by the trail selector. The `iss_crew` table and worker poll are still live but unused by the frontend
 
 **Features shipped — Data plumbing:**
+- Initial load + window-change calls RPC `iss_positions_window(minutes_back, target_points)` (see DB section) — returns ~1000 uniformly-sampled points regardless of window, bypassing Supabase's default 1000-row cap
+- Realtime INSERTs append to the active window (deduped by `id`), trimmed to `MAX_TRAIL_POINTS = 2000`. Window lives in a ref so the subscription closure always sees the current value without resubscribing
 - OVER-line reverse geocoding via `bigdatacloud` with in-memory cache; parentheticals (e.g. `(the)`) stripped from ISO-style country names; falls back to one of 5 ocean basins (`src/lib/oceans.ts`) when no country is returned
 - Tab-away freeze + "YOU LOOKED AWAY FOR X s · ISS TRAVELED Y KM" toast via the Page Visibility API — marker halts when hidden, toast appears on return computed from last-known velocity × elapsed seconds
 
-**Pending (approved in the current build plan, not built yet):**
-- Vertical scroll container + fixed right-side `SectionNav` (GLOBE / CAMERAS / CREW)
-- `CamerasSection` — 3 YouTube live-stream iframes in a responsive grid
-- `CrewSection` — dedicated grid of astronaut cards with Wikipedia photo + bio (`/api/rest_v1/page/summary/{name}`)
+**Pending:**
 - Vercel deploy (final assignment step)
 
-**Deferred (nice-to-have, not blocking submission):**
-- Day/night terminator shading on the globe
+**Deferred / dropped:**
+- Day/night terminator shading on the globe (nice-to-have)
 - ISS marker upgrade (3D model or sprite instead of a colored dot)
+- Previously-planned multi-section layout (`SectionNav` / `CamerasSection` / `CrewSection`) — dropped: user explicitly declined the crew feature, and the globe + trail selector stands alone
 
 ## Setup
 
@@ -88,15 +93,17 @@ Polls `wheretheiss.at` (configured 5s sleep; effective ~13s insert cadence becau
 ### 2. Database — Supabase
 Project `iss-tracker`, ref `lqaasrrtsgdxtrzfcoux`, region us-east-2. Tables provisioned by migration `001_init_iss_schema`.
 
-- `iss_positions` — time-series: `id`, `ts`, `inserted_at`, `lat`, `lon`, `altitude_km`, `velocity_kmh`, `visibility`. Index: `(ts desc)` for the frontend's "last 90 min" load.
-- `iss_crew` — roster: `name`, `craft`, `updated_at`. Composite PK `(name, craft)`.
+- `iss_positions` — time-series: `id`, `ts`, `inserted_at`, `lat`, `lon`, `altitude_km`, `velocity_kmh`, `visibility`. Index: `(ts desc)` for time-window queries.
+- `iss_crew` — roster: `name`, `craft`, `updated_at`. Composite PK `(name, craft)`. Still populated by the worker but unused by the frontend (crew panel was removed).
 
-Both tables have RLS enabled with a single `public read` policy for `anon, authenticated`. Both are added to the `supabase_realtime` publication — the worker writes with the **service-role key** (bypasses RLS), the frontend reads with the **publishable key**.
+**RPC — `iss_positions_window(minutes_back int, target_points int default 1000)`** — applied via migration `002_iss_positions_window_rpc`. Counts rows in the window, computes `stride = ceil(count / target_points)`, returns every strideth row (newest always included, stride-aligned via `row_number() over (order by ts desc)`), ordered `ts asc`. Called by the frontend on initial load and every window change — this is the bypass for Supabase's default `max_rows = 1000` limit (without it, asking for 6 H silently returned the *oldest* 1000 rows in the window and the ISS appeared to "fly" from ~3 hours ago to now on first INSERT). The RPC lives in the database only — no SQL file is tracked in this repo; it was applied via the Supabase MCP.
+
+Both tables have RLS enabled with a single `public read` policy for `anon, authenticated`. Both are added to the `supabase_realtime` publication — the worker writes with the **service-role key** (bypasses RLS), the frontend reads with the **publishable key**. The RPC has `execute` granted to `anon, authenticated` and runs as `SECURITY INVOKER` so RLS still applies.
 
 ### 3. Frontend — Next.js on Vercel
 - Next.js **16** (App Router, TypeScript, Tailwind v4, React 19, `src/` dir) — `create-next-app` scaffold at `asteroids/frontend/`.
 - 3D globe via `react-globe.gl` (wraps `three-globe`; simpler API for this scope than raw `react-three-fiber`). Earth/topology/night-sky textures served via `cdn.jsdelivr.net`.
-- Single client component `src/components/IssViewer.tsx` holds state, both Realtime subscriptions (`iss_positions` INSERTs, `iss_crew` `*` events filtered to `craft='ISS'`), the SLERP tween loop, the Page Visibility listener, and the hover tooltip wiring.
+- Single client component `src/components/IssViewer.tsx` holds state, the RPC-backed window fetch (refetches on window change), the `iss_positions` Realtime subscription, the SLERP tween loop, the Page Visibility listener, and the hover tooltip wiring.
 - Shared helpers in `src/lib/`: `supabase.ts` (client + types), `geocode.ts` (reverse-geocode with in-memory cache), `oceans.ts` (lat/lon → ocean-name fallback).
 - Supabase client uses the publishable key `sb_publishable_…`.
 - **Not yet deployed to Vercel** — final remaining step for the assignment.

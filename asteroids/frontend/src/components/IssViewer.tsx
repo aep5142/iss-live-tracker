@@ -303,7 +303,7 @@ export default function IssViewer() {
         if (current.length >= 2) segments.push({ coords: current });
         current = [];
       }
-      current.push([p.lat, p.lon, 0.02]);
+      current.push([p.lat, p.lon, 0]);
       lastMs = t;
     }
     if (current.length >= 2) segments.push({ coords: current });
@@ -326,7 +326,7 @@ export default function IssViewer() {
           kind: "trail",
           lat: p.lat,
           lng: p.lon,
-          alt: 0.02,
+          alt: 0,
           ts: p.ts,
         });
         lastMs = t;
@@ -385,13 +385,13 @@ export default function IssViewer() {
         pointsData={globePoints}
         pointAltitude={(d) => (d as { alt: number }).alt}
         pointRadius={(d) =>
-          (d as { kind: "iss" | "trail" }).kind === "iss" ? 1.8 : 1.0
+          (d as { kind: "iss" | "trail" }).kind === "iss" ? 1.8 : 0.35
         }
         pointColor={(d) => {
           const p = d as { kind: "iss" | "trail" };
           if (p.kind === "iss")
             return latest?.visibility === "eclipsed" ? "#ff5a5a" : "#ffbf47";
-          return `${activeColor}40`;
+          return "rgba(0,0,0,0)";
         }}
         pointsTransitionDuration={0}
         onPointHover={(d) => {
@@ -436,22 +436,32 @@ export default function IssViewer() {
         pathTransitionDuration={0}
       />
 
-      <header className="pointer-events-none absolute left-6 top-6 z-10">
-        <div className="text-sm font-semibold tracking-[0.2em] text-[#5dd8f7]">
-          ISS LIVE TRACKER
+      <div className="pointer-events-none absolute left-6 top-6 z-10 xl:left-1/2 xl:-translate-x-1/2">
+        <div className="text-2xl font-semibold tracking-[0.3em] text-[#5dd8f7]">
+          INTERNATIONAL SPACE STATION LIVE TRACKER
         </div>
-        <div className="mt-1 flex items-center gap-2 text-[10px] tracking-[0.15em] text-white/50">
-          <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-[#ffbf47]" />
-          TRACKING · wheretheiss.at
-        </div>
-      </header>
+      </div>
 
-      <section className="pointer-events-none absolute left-6 top-24 z-10 w-72 border border-[#ffbf47]/25 bg-black/40 p-4 text-[11px] shadow-[0_0_20px_rgba(255,191,71,0.08)] backdrop-blur-sm">
-        <div className="mb-3 text-[10px] tracking-[0.25em] text-white/40">
+      <div className="pointer-events-none absolute right-24 top-6 z-10 flex h-12 items-center gap-2 text-[10px] tracking-[0.25em] text-white/60">
+        <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-[#ffbf47]" />
+        TRACKING
+      </div>
+
+      <a
+        href="https://wheretheiss.at/"
+        target="_blank"
+        rel="noopener noreferrer"
+        className="pointer-events-auto absolute bottom-6 left-6 z-10 text-[10px] tracking-[0.25em] text-white/50 transition hover:text-[#5dd8f7]"
+      >
+        DATA SOURCE · wheretheiss.at ↗
+      </a>
+
+      <section className="pointer-events-none absolute left-6 top-1/2 z-10 flex h-[420px] w-64 -translate-y-1/2 flex-col border border-[#ffbf47]/25 bg-black/40 p-5 text-[12px] shadow-[0_0_20px_rgba(255,191,71,0.08)] backdrop-blur-sm">
+        <div className="mb-4 text-[11px] tracking-[0.3em] text-white/50">
           ── TELEMETRY ──
         </div>
         {latest && displayPos ? (
-          <dl className="space-y-1.5">
+          <dl className="flex flex-1 flex-col justify-between">
             <Row
               label="LATITUDE"
               value={`${Math.abs(displayPos.lat).toFixed(4)}° ${displayPos.lat >= 0 ? "N" : "S"}`}
@@ -506,11 +516,43 @@ export default function IssViewer() {
         </button>
       )}
 
-      <section className="pointer-events-auto absolute right-6 top-6 z-10 w-44 border border-[#ffbf47]/25 bg-black/40 p-4 text-[11px] shadow-[0_0_20px_rgba(255,191,71,0.08)] backdrop-blur-sm">
-        <div className="mb-3 text-[10px] tracking-[0.25em] text-white/40">
+      <button
+        type="button"
+        onClick={() => {
+          if (globeRef.current && displayPos) {
+            globeRef.current.pointOfView(
+              { lat: displayPos.lat, lng: displayPos.lon, altitude: 2.4 },
+              1000,
+            );
+          }
+        }}
+        disabled={!displayPos}
+        title="Center on ISS"
+        className="pointer-events-auto absolute right-6 top-6 z-10 flex h-12 w-12 items-center justify-center border border-[#ffbf47]/30 bg-black/40 text-[#ffbf47] shadow-[0_0_20px_rgba(255,191,71,0.08)] backdrop-blur-sm transition hover:border-[#ffbf47] hover:bg-[#ffbf47]/10 disabled:opacity-40"
+      >
+        <svg
+          viewBox="0 0 24 24"
+          width="20"
+          height="20"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+        >
+          <circle cx="12" cy="12" r="8" />
+          <circle cx="12" cy="12" r="2.5" fill="currentColor" stroke="none" />
+          <line x1="12" y1="1.5" x2="12" y2="5" />
+          <line x1="12" y1="19" x2="12" y2="22.5" />
+          <line x1="1.5" y1="12" x2="5" y2="12" />
+          <line x1="19" y1="12" x2="22.5" y2="12" />
+        </svg>
+      </button>
+
+      <section className="pointer-events-auto absolute right-6 top-1/2 z-10 flex h-[420px] w-64 -translate-y-1/2 flex-col border border-[#ffbf47]/25 bg-black/40 p-5 text-[12px] shadow-[0_0_20px_rgba(255,191,71,0.08)] backdrop-blur-sm">
+        <div className="mb-4 text-[11px] tracking-[0.3em] text-white/50">
           ── TRAIL ──
         </div>
-        <ul className="space-y-1.5">
+        <ul className="space-y-2">
           {WINDOWS.map((w) => {
             const active = w.minutes === windowMin;
             return (
@@ -518,15 +560,15 @@ export default function IssViewer() {
                 <button
                   type="button"
                   onClick={() => setWindowMin(w.minutes)}
-                  className="flex w-full items-center gap-2 border px-2 py-1.5 text-[10px] tracking-[0.2em] transition hover:bg-white/5"
+                  className="flex w-full items-center gap-3 border px-3 py-2.5 text-xs tracking-[0.25em] transition hover:bg-white/5"
                   style={{
                     borderColor: active ? w.color : "rgba(255,255,255,0.12)",
                     backgroundColor: active ? `${w.color}1f` : "transparent",
-                    color: active ? w.color : "rgba(228,228,228,0.65)",
+                    color: active ? w.color : "rgba(228,228,228,0.7)",
                   }}
                 >
                   <span
-                    className="inline-block h-1.5 w-4 flex-shrink-0"
+                    className="inline-block h-2 w-5 flex-shrink-0"
                     style={{ backgroundColor: w.color }}
                   />
                   <span>{w.label}</span>
