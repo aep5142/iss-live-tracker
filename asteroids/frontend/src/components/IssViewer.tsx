@@ -342,6 +342,11 @@ export default function IssViewer() {
     return trailPoints;
   }, [positions, displayPos, latest?.ts]);
 
+  const ringsData = useMemo(() => {
+    if (!displayPos) return [];
+    return [{ lat: displayPos.lat, lng: displayPos.lon }];
+  }, [displayPos]);
+
   const visLabel = latest
     ? latest.visibility === "eclipsed"
       ? "ECLIPSED"
@@ -370,13 +375,13 @@ export default function IssViewer() {
         pointsData={globePoints}
         pointAltitude={(d) => (d as { alt: number }).alt}
         pointRadius={(d) =>
-          (d as { kind: "iss" | "trail" }).kind === "iss" ? 0.6 : 1.0
+          (d as { kind: "iss" | "trail" }).kind === "iss" ? 1.8 : 0.5
         }
         pointColor={(d) => {
           const p = d as { kind: "iss" | "trail" };
           if (p.kind === "iss")
             return latest?.visibility === "eclipsed" ? "#ff5a5a" : "#ffbf47";
-          return "rgba(255,191,71,0.3)";
+          return "rgba(255,191,71,0.25)";
         }}
         pointsTransitionDuration={0}
         onPointHover={(d) => {
@@ -403,6 +408,14 @@ export default function IssViewer() {
             setHover(null);
           }, 500);
         }}
+        ringsData={ringsData}
+        ringLat={(d) => (d as { lat: number }).lat}
+        ringLng={(d) => (d as { lng: number }).lng}
+        ringAltitude={0.061}
+        ringColor={() => (t: number) => `rgba(255,191,71,${1 - t})`}
+        ringMaxRadius={4}
+        ringPropagationSpeed={2}
+        ringRepeatPeriod={1400}
         pathsData={trailPath}
         pathPoints={(d) => (d as { coords: number[][] }).coords}
         pathPointLat={(p) => (p as number[])[0]}
