@@ -1,0 +1,13 @@
+[project]
+name = "iss-worker"
+version = "0.1.0"
+description = "Polls the ISS position + crew and writes to Supabase."
+requires-python = ">=3.13"
+dependencies = [
+    "httpx>=0.27",
+    "supabase>=2.7",
+    "python-dotenv>=1.0",
+]
+
+[tool.uv]
+package = false
