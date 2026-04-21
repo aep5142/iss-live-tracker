@@ -21,6 +21,8 @@ const SAMPLED_TARGET_POINTS = 1000;
 const MAX_TRAIL_POINTS = 2000;
 const EXPECTED_POLL_MS = 13_000;
 const HOVER_DOT_INTERVAL_S = 30;
+const MIN_SEGMENT_BREAK_MS = 60_000;
+const MAX_SEGMENT_BREAK_MS = 10 * 60_000;
 
 function toVec3(lat: number, lon: number): [number, number, number] {
   const phi = (lat * Math.PI) / 180;
@@ -56,6 +58,46 @@ function slerp(
   return toLatLon(a * x1 + b * x2, a * y1 + b * y2, a * z1 + b * z2);
 }
 
+function angularDistanceDeg(
+  lat1: number,
+  lon1: number,
+  lat2: number,
+  lon2: number,
+) {
+  const phi1 = (lat1 * Math.PI) / 180;
+  const phi2 = (lat2 * Math.PI) / 180;
+  const dPhi = phi2 - phi1;
+  const dLambda = ((lon2 - lon1) * Math.PI) / 180;
+
+  const a =
+    Math.sin(dPhi / 2) ** 2 +
+    Math.cos(phi1) * Math.cos(phi2) * Math.sin(dLambda / 2) ** 2;
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return (c * 180) / Math.PI;
+}
+
+function getTrailBreakThresholdMs(positions: IssPosition[]) {
+  if (positions.length < 3) return MIN_SEGMENT_BREAK_MS;
+
+  const deltas: number[] = [];
+  for (let i = 1; i < positions.length; i += 1) {
+    const delta =
+      new Date(positions[i].ts).getTime() -
+      new Date(positions[i - 1].ts).getTime();
+    if (delta > 0) deltas.push(delta);
+  }
+
+  if (deltas.length === 0) return MIN_SEGMENT_BREAK_MS;
+
+  const sorted = [...deltas].sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)];
+
+  return Math.max(
+    MIN_SEGMENT_BREAK_MS,
+    Math.min(MAX_SEGMENT_BREAK_MS, median * 3),
+  );
+}
+
 type Tween = {
   fromLat: number;
   fromLon: number;
@@ -70,6 +112,18 @@ type GlobeHandle = {
     v: { lat: number; lng: number; altitude?: number },
     ms?: number,
   ) => void;
+  toGlobeCoords: (x: number, y: number) => { lat: number; lng: number } | null;
+};
+
+type TrailAnchor = {
+  lat: number;
+  lng: number;
+  ts: string;
+};
+
+type TrailSegment = {
+  coords: number[][];
+  anchors: TrailAnchor[];
 };
 
 export default function IssViewer() {
@@ -292,49 +346,37 @@ export default function IssViewer() {
     return () => cancelAnimationFrame(raf);
   }, []);
 
-  const trailPath = useMemo(() => {
+  const trailPath = useMemo<TrailSegment[]>(() => {
     if (visiblePositions.length < 2) return [];
-    const segments: { coords: number[][] }[] = [];
+
+    const breakThresholdMs = getTrailBreakThresholdMs(visiblePositions);
+    const segments: TrailSegment[] = [];
     let current: number[][] = [];
+    let anchors: TrailAnchor[] = [];
     let lastMs = -Infinity;
+    let lastAnchorMs = -Infinity;
     for (const p of visiblePositions) {
       const t = new Date(p.ts).getTime();
-      if (current.length > 0 && t - lastMs > 60_000) {
-        if (current.length >= 2) segments.push({ coords: current });
+      if (current.length > 0 && t - lastMs > breakThresholdMs) {
+        if (current.length >= 2) segments.push({ coords: current, anchors });
         current = [];
+        anchors = [];
+        lastAnchorMs = -Infinity;
       }
       current.push([p.lat, p.lon, 0]);
+      if (t - lastAnchorMs >= HOVER_DOT_INTERVAL_S * 1000) {
+        anchors.push({ lat: p.lat, lng: p.lon, ts: p.ts });
+        lastAnchorMs = t;
+      }
       lastMs = t;
     }
-    if (current.length >= 2) segments.push({ coords: current });
+    if (current.length >= 2) segments.push({ coords: current, anchors });
     return segments;
   }, [visiblePositions]);
 
   const globePoints = useMemo(() => {
-    const trailPoints: {
-      kind: "trail";
-      lat: number;
-      lng: number;
-      alt: number;
-      ts: string;
-    }[] = [];
-    let lastMs = -Infinity;
-    for (const p of visiblePositions) {
-      const t = new Date(p.ts).getTime();
-      if (t - lastMs >= HOVER_DOT_INTERVAL_S * 1000) {
-        trailPoints.push({
-          kind: "trail",
-          lat: p.lat,
-          lng: p.lon,
-          alt: 0,
-          ts: p.ts,
-        });
-        lastMs = t;
-      }
-    }
     if (displayPos) {
       return [
-        ...trailPoints,
         {
           kind: "iss" as const,
           lat: displayPos.lat,
@@ -344,8 +386,8 @@ export default function IssViewer() {
         },
       ];
     }
-    return trailPoints;
-  }, [visiblePositions, displayPos, latest?.ts]);
+    return [];
+  }, [displayPos, latest?.ts]);
 
   const pathColors = useMemo(
     () => [`${activeColor}40`, `${activeColor}d9`],
@@ -385,33 +427,16 @@ export default function IssViewer() {
         pointsData={globePoints}
         pointAltitude={(d) => (d as { alt: number }).alt}
         pointRadius={(d) =>
-          (d as { kind: "iss" | "trail" }).kind === "iss" ? 1.8 : 0.35
+          (d as { kind: "iss" }).kind === "iss" ? 1.8 : 0.5
         }
         pointColor={(d) => {
-          const p = d as { kind: "iss" | "trail" };
+          const p = d as { kind: "iss" };
           if (p.kind === "iss")
             return latest?.visibility === "eclipsed" ? "#ff5a5a" : "#ffbf47";
           return "rgba(0,0,0,0)";
         }}
         pointsTransitionDuration={0}
-        onPointHover={(d) => {
-          const p = d as { kind: "iss" | "trail"; ts: string } | null;
-          if (p && p.kind === "trail" && p.ts) {
-            if (hoverClearTimerRef.current !== null) {
-              window.clearTimeout(hoverClearTimerRef.current);
-              hoverClearTimerRef.current = null;
-            }
-            setHover((prev) =>
-              prev && prev.ts === p.ts
-                ? prev
-                : {
-                    ts: p.ts,
-                    x: mouseRef.current.x,
-                    y: mouseRef.current.y,
-                  },
-            );
-            return;
-          }
+        onPointHover={() => {
           if (hoverClearTimerRef.current !== null) return;
           hoverClearTimerRef.current = window.setTimeout(() => {
             hoverClearTimerRef.current = null;
@@ -427,13 +452,66 @@ export default function IssViewer() {
         ringPropagationSpeed={2}
         ringRepeatPeriod={1400}
         pathsData={trailPath}
-        pathPoints={(d) => (d as { coords: number[][] }).coords}
+        pathPoints={(d) => (d as TrailSegment).coords}
         pathPointLat={(p) => (p as number[])[0]}
         pathPointLng={(p) => (p as number[])[1]}
         pathPointAlt={(p) => (p as number[])[2]}
         pathColor={() => pathColors}
         pathStroke={1.5}
         pathTransitionDuration={0}
+        onPathHover={(segment) => {
+          if (segment) {
+            if (hoverClearTimerRef.current !== null) {
+              window.clearTimeout(hoverClearTimerRef.current);
+              hoverClearTimerRef.current = null;
+            }
+
+            const hoverCoords = globeRef.current?.toGlobeCoords(
+              mouseRef.current.x,
+              mouseRef.current.y,
+            );
+            const anchors = (segment as TrailSegment).anchors;
+            if (!hoverCoords || anchors.length === 0) return;
+
+            let closest = anchors[0];
+            let minDistance = angularDistanceDeg(
+              hoverCoords.lat,
+              hoverCoords.lng,
+              closest.lat,
+              closest.lng,
+            );
+
+            for (let i = 1; i < anchors.length; i += 1) {
+              const candidate = anchors[i];
+              const distance = angularDistanceDeg(
+                hoverCoords.lat,
+                hoverCoords.lng,
+                candidate.lat,
+                candidate.lng,
+              );
+              if (distance < minDistance) {
+                minDistance = distance;
+                closest = candidate;
+              }
+            }
+
+            setHover((prev) =>
+              prev && prev.ts === closest.ts
+                ? prev
+                : {
+                    ts: closest.ts,
+                    x: mouseRef.current.x,
+                    y: mouseRef.current.y,
+                  },
+            );
+            return;
+          }
+          if (hoverClearTimerRef.current !== null) return;
+          hoverClearTimerRef.current = window.setTimeout(() => {
+            hoverClearTimerRef.current = null;
+            setHover(null);
+          }, 500);
+        }}
       />
 
       <div className="pointer-events-none absolute left-6 top-6 z-10 xl:left-1/2 xl:-translate-x-1/2">
