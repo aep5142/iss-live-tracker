@@ -25,11 +25,11 @@ Polls the International Space Station's position and renders it on a 3D globe th
 Primary view is **Option 1** (per hand-sketch in `/Users/agustin.ep/Downloads/IMG_2708.HEIC`): 3D Earth globe with the ISS orbiting around it. Option 2 (POV from the ISS with Earth rotating below) was considered but deferred — same data pipeline, ~2–3× the frontend work. Revisit as stretch.
 
 **Features shipped — Globe:**
-- Orbit trail — configurable window (30 / 60 / 90 min / 3 H / 6 H / 12 H / 24 H) via the right-side selector; each window has its own accent color, applied to both the path gradient and the trail dots
-- Trail is drawn flat on the surface (`alt: 0`) — just the 2D path. Trail "dots" at each hover-anchor point are still in the scene but rendered with fully-transparent color so only the line is visible while hover-picking keeps working
-- ISS marker is the only 3D element on the globe: bigger amber dot at `alt: 0.06`, plus a pulsing amber ring (`ringsData`, max radius 4°, repeat ~1.4s) that makes "now" unmistakable next to the trailing dots
-- Path is split into separate segments whenever consecutive samples are >60s apart, so worker gaps don't draw long great-circle chords across the globe
-- Hoverable trail dots — one every ~30s of flight; anchored tooltip `ISS WAS HERE · X MIN AGO` (also `23s AGO` / `1h 23m AGO`); position snapshots on hover entry (doesn't chase the cursor); 500ms debounce prevents flicker between dots
+- Orbit trail — configurable window (30 / 60 / 90 min / 3 H / 6 H / 12 H / 24 H) via the right-side selector; each window has its own accent color, applied to the path gradient and active selector state
+- Trail is drawn flat on the surface (`alt: 0`) as a 2D path. The ISS marker is the only persistent 3D object rendered on the globe
+- ISS marker is a larger amber dot at `alt: 0.06`, plus a pulsing amber ring (`ringsData`, max radius 4°, repeat ~1.4s) that makes "now" unmistakable
+- Path is split into separate segments only on unusually large timestamp gaps: the threshold is derived from the sampled window cadence (median spacing ×3, capped at 10 min), so 12 H / 24 H stay continuous while real worker outages still break the line
+- Hover tooltip uses `react-globe.gl`'s native `onPathHover` plus `toGlobeCoords(...)` to map the mouse position to the nearest ~30s anchor on the hovered segment; tooltip stays anchored on hover entry (doesn't chase the cursor) and clears with a 500ms debounce
 - Smooth interpolation — great-circle SLERP in a `requestAnimationFrame` loop so the ISS glides between known fixes instead of teleporting
 - Initial camera centering — pans to the ISS on first load
 - **Recenter button** — crosshair icon top-right, smooth 1s pan back to the current ISS position (for when the user rotates the globe and loses it)
